@@ -2,15 +2,17 @@
 
 Du arbetar med **openAut POC2**: reglering av en värme-shuntgrupp från samma
 Siemens IOT2050 som POC1 använder för ventilationsaggregaten. I/O sker via
-Siemens EM1.8 (Desigo Essentials) Modbus-moduler på RS485.
+Siemens EM1.8 (Desigo Essentials) Modbus-moduler på en **egen RS485-buss** via
+en Moxa UPort 1150 USB-adapter.
 
 ## Systembeskrivning
 
-| Enhet | Roll | IP (standard) |
-|-------|------|---------------|
+| Enhet | Roll | IP/port (standard) |
+|-------|------|--------------------|
 | Mini-PC | OpenClaw, TimescaleDB, EMQX, Telegraf, Grafana (delas med POC1) | 192.168.10.10 |
 | Asus GX10 | Lokal LLM (Nemotron) | 192.168.10.20 |
 | Siemens IOT2050 | Edge-nod — Modbus RTU + shuntreglering | 192.168.10.50 |
+| Moxa UPort 1150 | USB-RS485-adapter — egen buss för EM1.8 | /dev/openaut-shunt |
 
 ## I/O — Siemens EM1.8-moduler
 
@@ -34,9 +36,11 @@ shuntreglering", "sätt upp shuntgruppen", "deploy shunt control".
 
 ## Viktiga begränsningar
 
-- IOT2050 X30 = `/dev/ttyS2`. En seriell port kan **inte** delas av två
-  processer. Kontrollera om POC1:s `openaut-modbus` redan kör på porten innan
-  `openaut-shunt` startas — se README "RS485-samexistens".
+- POC2 kör på **egen buss** via Moxa UPort 1150 (`/dev/openaut-shunt`), skild från
+  POC1:s `/dev/ttyS2`. Ingen busskonflikt — `openaut-modbus` och `openaut-shunt`
+  kör samtidigt.
+- Moxa-porten måste vara i **RS-485 2-wire-läge**. Stabilt namn via udev-regeln
+  `edge/99-openaut-moxa.rules` (fyll i adapterns serienummer).
 - EM1.8 registernumrering i databladet är 1-baserad; pymodbus är 0-baserad.
 - Fail-safe = håll senaste läge (ventil + pump fryses vid fel).
 - Reglerloopen är överordnad/supervisory — fältets interlocks och frysskydd har
@@ -53,6 +57,9 @@ shuntreglering", "sätt upp shuntgruppen", "deploy shunt control".
 ## Felsökning
 
 ```bash
+# Moxa-adaptern på plats med stabilt namn?
+ssh openaut@192.168.10.50 "ls -l /dev/openaut-shunt"
+
 # Kör shuntregleringen?
 ssh openaut@192.168.10.50 "sudo systemctl status openaut-shunt"
 
@@ -61,7 +68,4 @@ ssh openaut@192.168.10.50 "sudo journalctl -u openaut-shunt -n 30 --no-pager"
 
 # MQTT-telemetri
 mosquitto_sub -h 192.168.10.10 -t "openaut/poc2/shunt/#" -v
-
-# Krockar med POC1 på bussen?
-ssh openaut@192.168.10.50 "systemctl is-active openaut-modbus"
 ```
