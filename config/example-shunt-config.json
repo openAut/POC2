@@ -1,5 +1,5 @@
 {
-  "_comment": "POC2 — shuntgruppsreglering via Siemens EM1.8-moduler på IOT2050 X30 (RS485). FYLL I registeradresser från Siemens datablad A6V13841491 (EM1.8U/R/D). Registernumrering är 1-baserad i databladet — pymodbus är 0-baserad, så subtrahera 1 om databladet anger 'register 1'.",
+  "_comment": "POC2 — shuntgruppsreglering via Siemens EM1.8-moduler. EM1.8-modulerna sitter på en EGEN buss via en Moxa UPort 1150 USB-RS485-adapter (skild från POC1:s /dev/ttyS2). FYLL I registeradresser från Siemens datablad A6V13841491 (EM1.8U/R/D). Registernumrering är 1-baserad i databladet — pymodbus är 0-baserad, så subtrahera 1 om databladet anger 'register 1'.",
   "site": "poc2",
 
   "edge_node": {
@@ -18,8 +18,8 @@
   },
 
   "rs485": {
-    "_comment": "Samma fysiska buss som POC1 (AHU). EM-modulerna har egna slave-ID. OBS: en seriell port kan inte delas av två processer — se README om buss-samexistens med POC1-pollern.",
-    "port": "/dev/ttyS2",
+    "_comment": "EGEN buss via Moxa UPort 1150 (USB-RS485). 'port' pekar på den stabila udev-symlänken /dev/openaut-shunt (se edge/99-openaut-moxa.rules) så enumereringsordningen (ttyUSB0/1/...) inte spelar roll. Moxa-porten måste vara satt till RS-485 2-wire-läge. Detta är en separat buss från POC1 — ingen krock med /dev/ttyS2.",
+    "port": "/dev/openaut-shunt",
     "baudrate": 19200,
     "parity": "N",
     "stopbits": 1,
