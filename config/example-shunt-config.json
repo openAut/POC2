@@ -1,0 +1,142 @@
+{
+  "_comment": "POC2 — shuntgruppsreglering via Siemens EM1.8-moduler. EM1.8-modulerna sitter på en EGEN buss via en Moxa UPort 1150 USB-RS485-adapter (skild från POC1:s /dev/ttyS2). FYLL I registeradresser från Siemens datablad A6V13841491 (EM1.8U/R/D). Registernumrering är 1-baserad i databladet — pymodbus är 0-baserad, så subtrahera 1 om databladet anger 'register 1'.",
+  "site": "poc2",
+
+  "edge_node": {
+    "ip": "192.168.10.50",
+    "ssh_user": "openaut",
+    "deploy_dir": "/opt/openaut/shunt"
+  },
+
+  "mqtt": {
+    "host": "192.168.10.10",
+    "port": 1883,
+    "tls": false,
+    "username": "",
+    "password": "",
+    "client_id": "openaut-shunt-poc2"
+  },
+
+  "rs485": {
+    "_comment": "EGEN buss via Moxa UPort 1150 (USB-RS485). 'port' pekar på den stabila udev-symlänken /dev/openaut-shunt (se edge/99-openaut-moxa.rules) så enumereringsordningen (ttyUSB0/1/...) inte spelar roll. Moxa-porten måste vara satt till RS-485 2-wire-läge. Detta är en separat buss från POC1 — ingen krock med /dev/ttyS2.",
+    "port": "/dev/openaut-shunt",
+    "baudrate": 19200,
+    "parity": "N",
+    "stopbits": 1,
+    "bytesize": 8,
+    "timeout": 1.0
+  },
+
+  "control_interval_seconds": 10,
+
+  "_modules_comment": "slave_id sätts i respektive moduls DIP/konfig. function_code: 3=holding, 4=input. Adresser nedan är PLATSHÅLLARE — ersätt med verkliga från databladet.",
+
+  "io": {
+    "supply_temp": {
+      "_role": "Framledningstemperaturgivare (resistiv ingång på EM1.8U)",
+      "module": "em1.8u",
+      "slave_id": 10,
+      "function_code": 4,
+      "address": 0,
+      "data_type": "int16",
+      "scale": 0.1,
+      "unit": "°C",
+      "min_plausible": -20,
+      "max_plausible": 120
+    },
+    "return_temp": {
+      "_role": "Returtemperaturgivare (resistiv ingång på EM1.8U)",
+      "module": "em1.8u",
+      "slave_id": 10,
+      "function_code": 4,
+      "address": 1,
+      "data_type": "int16",
+      "scale": 0.1,
+      "unit": "°C",
+      "min_plausible": -20,
+      "max_plausible": 120
+    },
+    "outdoor_temp": {
+      "_role": "Utetemperaturgivare (resistiv ingång på EM1.8U)",
+      "module": "em1.8u",
+      "slave_id": 10,
+      "function_code": 4,
+      "address": 2,
+      "data_type": "int16",
+      "scale": 0.1,
+      "unit": "°C",
+      "min_plausible": -50,
+      "max_plausible": 50
+    },
+    "valve_position": {
+      "_role": "Analog utgång för ventilställdon (analog ut på EM1.8U), 0-100%",
+      "module": "em1.8u",
+      "slave_id": 10,
+      "function_code": 3,
+      "address": 3,
+      "data_type": "uint16",
+      "scale": 1,
+      "unit": "%",
+      "output_min": 0,
+      "output_max": 100
+    },
+    "pump_start": {
+      "_role": "Reläutgång för pumpstart (EM1.8R), 0=av 1=på",
+      "module": "em1.8r",
+      "slave_id": 11,
+      "function_code": 3,
+      "address": 0,
+      "data_type": "uint16"
+    },
+    "pump_alarm": {
+      "_role": "Digital ingång — pumplarm (EM1.8D), 1=larm",
+      "module": "em1.8d",
+      "slave_id": 12,
+      "function_code": 4,
+      "address": 0,
+      "data_type": "uint16"
+    },
+    "pump_run": {
+      "_role": "Digital ingång — pumpdriftindikering (EM1.8D), 1=drift",
+      "module": "em1.8d",
+      "slave_id": 12,
+      "function_code": 4,
+      "address": 1,
+      "data_type": "uint16"
+    }
+  },
+
+  "heating_curve": {
+    "_comment": "6-punkts utomhuskompenserad värmekurva. (utetemp °C → framledningsbörvärde °C). Sorteras stigande på utetemp; linjär interpolation mellan punkter; klampning utanför ändpunkterna.",
+    "points": [
+      { "outdoor": -20, "supply": 60 },
+      { "outdoor": -10, "supply": 52 },
+      { "outdoor": 0,   "supply": 44 },
+      { "outdoor": 5,   "supply": 38 },
+      { "outdoor": 12,  "supply": 30 },
+      { "outdoor": 17,  "supply": 22 }
+    ]
+  },
+
+  "control": {
+    "_comment": "PI-regulator som driver ventilläget så att framledningstemp följer kurvans börvärde.",
+    "kp": 4.0,
+    "ki": 0.15,
+    "valve_min_pct": 0,
+    "valve_max_pct": 100,
+    "deadband_c": 0.3
+  },
+
+  "pump": {
+    "_comment": "Pumpen startar när utetemp < start_below_c och stoppar över start_below_c + hysteresis_c (sommarstopp).",
+    "start_below_c": 17,
+    "hysteresis_c": 1.0
+  },
+
+  "safety": {
+    "_comment": "Fail-safe = HÅLL SENASTE LÄGE. Vid sensorbortfall, pumplarm eller watchdog-timeout behålls senaste ventilläge och pumpstatus; ingen ny styrning skrivs förrän felet rättats.",
+    "mode": "hold_last",
+    "watchdog_timeout_s": 30,
+    "max_consecutive_read_failures": 5
+  }
+}

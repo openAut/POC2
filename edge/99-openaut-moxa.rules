@@ -1,0 +1,22 @@
+# openAut POC2 — stable name for the Moxa UPort 1150 USB-RS485 adapter
+#
+# Without this, the adapter may appear as /dev/ttyUSB0 one boot and /dev/ttyUSB1
+# the next (depends on USB enumeration order). This rule pins it to a fixed
+# symlink /dev/openaut-shunt that the config points at.
+#
+# Moxa UPort 1150 USB IDs: idVendor=110a (Moxa), idProduct=1150.
+#
+# 1. Find the adapter's serial number:
+#      udevadm info -a -n /dev/ttyUSB0 | grep -E 'serial|idVendor|idProduct'
+# 2. Put the serial below (replace MOXA_SERIAL_HERE).
+# 3. Install:
+#      sudo cp 99-openaut-moxa.rules /etc/udev/rules.d/
+#      sudo udevadm control --reload-rules && sudo udevadm trigger
+# 4. Verify:
+#      ls -l /dev/openaut-shunt   ->  symlink to the Moxa ttyUSB*
+#
+# If you have only ONE USB-serial adapter on the node you may match on vendor/
+# product alone (drop the ATTRS{serial} clause), but matching on serial is the
+# robust choice if more USB-serial devices are ever added.
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="110a", ATTRS{idProduct}=="1150", ATTRS{serial}=="MOXA_SERIAL_HERE", SYMLINK+="openaut-shunt", GROUP="dialout", MODE="0660"
