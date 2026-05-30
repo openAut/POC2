@@ -18,8 +18,9 @@ styr** — till skillnad från POC1 som bara läser.
 | Mini-PC | OpenClaw · TimescaleDB · EMQX · Telegraf · Grafana (delas med POC1) | 192.168.10.10 |
 | Asus GX10 | Lokal LLM (Nemotron) | 192.168.10.20 |
 | Siemens IOT2050 | Edge-nod — Modbus RTU + shuntreglering | 192.168.10.50 |
+| Moxa UPort 1150 | USB-RS485-adapter — egen buss för EM1.8-modulerna | /dev/openaut-shunt |
 
-### Siemens EM1.8-moduler (RS485, egna slave-ID)
+### Siemens EM1.8-moduler (RS485 via Moxa, egna slave-ID)
 
 | Modul | Funktion | Används till |
 |-------|----------|--------------|
@@ -29,22 +30,29 @@ styr** — till skillnad från POC1 som bara läser.
 
 ---
 
-## ⚠️ RS485-samexistens med POC1 (läs detta först)
+## RS485-bussar — POC1 och POC2 är separerade
 
-IOT2050:s X30-port (`/dev/ttyS2`) kan bara öppnas av **en** process. POC1:s
-`openaut-modbus.service` äger redan porten för att polla aggregaten. Två tjänster
-på samma fysiska port fungerar inte.
+POC2 kör EM1.8-modulerna på en **egen** buss via en **Moxa UPort 1150**
+USB-RS485-adapter. POC1 fortsätter på IOT2050:s inbyggda X30-port (`/dev/ttyS2`).
+Eftersom det är två fysiskt skilda portar finns ingen busskonflikt — `openaut-modbus`
+(POC1) och `openaut-shunt` (POC2) kör samtidigt utan att störa varandra.
 
-Välj en väg innan driftsättning:
+**Stabilt enhetsnamn (viktigt):** USB-serieportar kan byta nummer mellan
+omstarter (`ttyUSB0` ↔ `ttyUSB1`). Därför pinnas Moxa-adaptern till en fast
+symlänk `/dev/openaut-shunt` via en udev-regel (`edge/99-openaut-moxa.rules`),
+och configen pekar på den symlänken — inte på `ttyUSB0` direkt.
 
-1. **Egen adapter (rekommenderas för POC2):** koppla EM1.8-modulerna till en
-   USB-RS485-adapter (`/dev/ttyUSB0`) och sätt `rs485.port` därefter. Då kör AHU
-   och shunt på var sin port utan konflikt.
-2. **Slå ihop:** konsolidera AHU-polling och shuntstyrning till en enda
-   bussägande process. Renast på lång sikt, men en större förändring.
-
-`shunt-control-integration`-skillet kontrollerar om `openaut-modbus` är aktiv och
-stoppar med en fråga innan den startar `openaut-shunt` på samma port.
+Före driftsättning:
+1. **Sätt Moxa-porten i RS-485 2-wire-läge** (Moxas Linux-drivrutin/verktyg för
+   UPort 1150).
+2. **Installera udev-regeln** med adapterns serienummer:
+   ```bash
+   udevadm info -a -n /dev/ttyUSB0 | grep -E 'serial|idVendor|idProduct'
+   # fyll i ATTRS{serial} i edge/99-openaut-moxa.rules, sedan:
+   sudo cp edge/99-openaut-moxa.rules /etc/udev/rules.d/
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ls -l /dev/openaut-shunt   # ska peka på Moxans ttyUSB*
+   ```
 
 ---
 
@@ -74,32 +82,34 @@ supervisory, inte en säkerhetsfunktion.
 
 ## Driftsättning (via OpenClaw)
 
-1. Kopiera och fyll i config:
+1. Sätt Moxa-porten i RS-485-läge och installera udev-regeln (se ovan).
+
+2. Kopiera och fyll i config:
    ```bash
    cp config/example-shunt-config.json config/shunt-config.json
    # Fyll i: slave-ID, registeradresser (från Siemens datablad A6V13841491),
-   # ventilskalning, kurva och pumpgräns.
+   # ventilskalning, kurva och pumpgräns. Lämna rs485.port = /dev/openaut-shunt.
    nano config/shunt-config.json
    ```
    > EM1.8 registernumrering i databladet är **1-baserad**; pymodbus är 0-baserad
    > — subtrahera 1.
 
-2. Säg till agenten:
+3. Säg till agenten:
    ```
    Driftsätt shuntregleringen.
    Konfig: config/shunt-config.json
    ```
    OpenClaw kör `shunt-control-integration`:
-   kontrollerar bussamexistens → verifierar SSH → kör `setup.sh` → skannar
+   verifierar SSH → kör `setup.sh` → bekräftar /dev/openaut-shunt → skannar
    EM1.8-modulerna → kopierar `shunt_control.py` + config → startar systemd-service
    → verifierar MQTT-telemetri.
 
-3. Skapa databastabellen (en gång):
+4. Skapa databastabellen (en gång):
    ```bash
    docker compose exec timescaledb psql -U openaut -d openaut < db/shunt_init.sql
    ```
 
-4. Lägg till Telegraf-konsumenten (`telegraf/shunt-mqtt.conf`) i POC1:s
+5. Lägg till Telegraf-konsumenten (`telegraf/shunt-mqtt.conf`) i POC1:s
    Telegraf-config så att `openaut/<site>/shunt/#` ingestas.
 
 ---
@@ -108,7 +118,7 @@ supervisory, inte en säkerhetsfunktion.
 
 ```
 EM1.8U/R/D (Modbus RS485)
-        ↓  /dev/ttyS2 (eller /dev/ttyUSB0)
+        ↓  Moxa UPort 1150 → /dev/openaut-shunt
   IOT2050 — shunt_control.py  (läser givare, kör kurva+PI, styr ventil+pump)
         ↓  MQTT  openaut/poc2/shunt/{signal}
   EMQX broker (Mini-PC)
@@ -133,6 +143,7 @@ config/shunt-config.schema.json             JSON-schema för validering
 edge/shunt_control.py                       Reglerloop (körs på IOT2050)
 edge/openaut-shunt.service                  systemd-service
 edge/setup.sh                               Installerar beroenden + deploy-dir
+edge/99-openaut-moxa.rules                  udev: stabilt namn för Moxa UPort 1150
 db/shunt_init.sql                           TimescaleDB-tabell
 telegraf/shunt-mqtt.conf                    Telegraf MQTT → TimescaleDB
 AGENTS.md                                   Instruktioner för OpenClaw-agenten
@@ -143,6 +154,9 @@ AGENTS.md                                   Instruktioner för OpenClaw-agenten
 ## Verifiering
 
 ```bash
+# Moxa-adaptern syns och har stabilt namn?
+ssh openaut@192.168.10.50 "ls -l /dev/openaut-shunt"
+
 # Service
 ssh openaut@192.168.10.50 "sudo systemctl status openaut-shunt"
 
