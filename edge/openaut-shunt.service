@@ -1,0 +1,28 @@
+[Unit]
+Description=openAut Shunt Control (POC2)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=openaut
+Group=openaut
+WorkingDirectory=/opt/openaut/shunt
+ExecStart=/usr/bin/python3 /opt/openaut/shunt/shunt_control.py /opt/openaut/shunt/config.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openaut-shunt
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/openaut/shunt
+# Required for /dev/ttyS2 (RS485) access
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target
