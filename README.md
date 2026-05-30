@@ -42,17 +42,102 @@ omstarter (`ttyUSB0` ↔ `ttyUSB1`). Därför pinnas Moxa-adaptern till en fast
 symlänk `/dev/openaut-shunt` via en udev-regel (`edge/99-openaut-moxa.rules`),
 och configen pekar på den symlänken — inte på `ttyUSB0` direkt.
 
-Före driftsättning:
-1. **Sätt Moxa-porten i RS-485 2-wire-läge** (Moxas Linux-drivrutin/verktyg för
-   UPort 1150).
-2. **Installera udev-regeln** med adapterns serienummer:
-   ```bash
-   udevadm info -a -n /dev/ttyUSB0 | grep -E 'serial|idVendor|idProduct'
-   # fyll i ATTRS{serial} i edge/99-openaut-moxa.rules, sedan:
-   sudo cp edge/99-openaut-moxa.rules /etc/udev/rules.d/
-   sudo udevadm control --reload-rules && sudo udevadm trigger
-   ls -l /dev/openaut-shunt   # ska peka på Moxans ttyUSB*
-   ```
+---
+
+## Moxa UPort 1150 — RS-485 2-wire på Linux (gör detta först)
+
+UPort 1150 stödjer RS-232, RS-422, RS-485 2-wire och 4-wire i hårdvaran, men
+det *elektriska* läget måste väljas i mjukvara. Linux har två drivrutiner och de
+beter sig olika:
+
+- **Mainline `mxuport`** (följer med kärnan, laddas automatiskt) ger dig
+  `/dev/ttyUSB*` direkt — men kan **inte** på ett tillförlitligt sätt växla det
+  elektriska gränssnittet (2W/4W/422). Standard-ioctl:n (`TIOCSRS485`) räcker
+  inte för att välja interface på den här enheten.
+- **Moxas egen `mxu11x0`** använder `setserial` för att välja läge och är den
+  **stödda vägen** för programmatisk 2-wire-växling.
+
+> Använd därför Moxas `mxu11x0`-drivrutin för POC2.
+
+### 1. Installera Moxas mxu11x0-drivrutin
+
+```bash
+# Byggberoenden (en gång)
+sudo apt-get update
+sudo apt-get install -y build-essential linux-headers-$(uname -r) git setserial
+
+# Hämta drivrutinen
+git clone https://github.com/Moxa-Linux/mxu11x0.git
+cd mxu11x0
+
+# Bygg och installera
+make
+sudo make install      # installerar mxu11x0.ko + laddar modulen
+```
+
+> **Nyare kärna?** Om `make` fallerar på kärna ≥ 6.x, använd community-forken
+> `https://github.com/j-hc/mxu11x0-linux-v6.5` som har patchats för moderna
+> kärnor. På IOT2050 (Debian/Yocto-baserad) — kontrollera `uname -r` och välj
+> källa därefter.
+
+Verifiera att rätt modul laddats (inte mainline `mxuport`):
+
+```bash
+lsmod | grep -E 'mxu11x0|mxuport'
+dmesg | grep -i mxu | tail
+```
+
+Om mainline `mxuport` redan ockuperar enheten, blockera den så Moxas modul
+används i stället:
+
+```bash
+echo 'blacklist mxuport' | sudo tee /etc/modprobe.d/blacklist-mxuport.conf
+sudo modprobe -r mxuport 2>/dev/null || true
+sudo modprobe mxu11x0
+```
+
+### 2. Sätt porten till RS-485 2-wire (`port 1`)
+
+`setserial` väljer det elektriska läget. Värden för UPort 1150:
+`0 = RS-232`, **`1 = RS-485 2W`**, `2 = RS-422`, `3 = RS-485 4W`.
+
+```bash
+sudo setserial /dev/ttyUSB0 port 1     # RS-485 2-wire
+setserial -G /dev/ttyUSB0              # verifiera (ska visa 'port 1')
+```
+
+### 3. Gör läget bestående över omstart
+
+Lägg läges-kommandot i en liten systemd-unit som binds till enheten, så att
+2-wire sätts varje gång adaptern dyker upp:
+
+```bash
+sudo tee /etc/systemd/system/openaut-moxa-rs485.service >/dev/null <<'EOF'
+[Unit]
+Description=Set Moxa UPort 1150 to RS-485 2-wire
+After=dev-openaut\x2dshunt.device
+BindsTo=dev-openaut\x2dshunt.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/setserial /dev/openaut-shunt port 1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now openaut-moxa-rs485.service
+```
+
+### 4. Installera udev-regeln för stabilt namn
+
+```bash
+udevadm info -a -n /dev/ttyUSB0 | grep -E 'serial|idVendor|idProduct'
+# fyll i ATTRS{serial} i edge/99-openaut-moxa.rules, sedan:
+sudo cp edge/99-openaut-moxa.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+ls -l /dev/openaut-shunt   # ska peka på Moxans ttyUSB*
+```
 
 ---
 
@@ -82,7 +167,8 @@ supervisory, inte en säkerhetsfunktion.
 
 ## Driftsättning (via OpenClaw)
 
-1. Sätt Moxa-porten i RS-485-läge och installera udev-regeln (se ovan).
+1. Installera Moxas mxu11x0-drivrutin, sätt porten till RS-485 2-wire (`port 1`)
+   och installera udev-regeln (se avsnittet ovan).
 
 2. Kopiera och fyll i config:
    ```bash
@@ -154,8 +240,14 @@ AGENTS.md                                   Instruktioner för OpenClaw-agenten
 ## Verifiering
 
 ```bash
+# Rätt drivrutin laddad (mxu11x0, inte mainline mxuport)?
+ssh openaut@192.168.10.50 "lsmod | grep -E 'mxu11x0|mxuport'"
+
 # Moxa-adaptern syns och har stabilt namn?
 ssh openaut@192.168.10.50 "ls -l /dev/openaut-shunt"
+
+# Är porten i RS-485 2-wire (port 1)?
+ssh openaut@192.168.10.50 "setserial -G /dev/openaut-shunt"
 
 # Service
 ssh openaut@192.168.10.50 "sudo systemctl status openaut-shunt"

@@ -3,9 +3,11 @@
 # Run as root: sudo bash setup.sh
 #
 # PREREQUISITES (same edge node as POC1):
-#   1. Moxa UPort 1150 USB-RS485 adapter connected, set to RS-485 2-wire mode.
-#   2. User 'openaut' exists and is in 'dialout' group (from POC1 setup).
-#   3. Siemens EM1.8U/R/D modules wired to the Moxa RS485 bus with unique slave IDs.
+#   1. Moxa UPort 1150 USB-RS485 adapter connected.
+#   2. Moxa's mxu11x0 driver installed (see README "Moxa UPort 1150 — RS-485 2-wire").
+#      The mainline mxuport driver cannot reliably switch the electrical interface.
+#   3. User 'openaut' exists and is in 'dialout' group (from POC1 setup).
+#   4. Siemens EM1.8U/R/D modules wired to the Moxa RS485 bus with unique slave IDs.
 #
 # POC2 uses a DEDICATED bus via the Moxa adapter (/dev/openaut-shunt), separate
 # from POC1's /dev/ttyS2 — no RS485 contention with openaut-modbus.
@@ -32,6 +34,24 @@ else
     warn "Moxa UPort 1150 not detected (lsusb). Check the USB cable/adapter."
 fi
 
+# --- Driver check: prefer Moxa's mxu11x0 over mainline mxuport ---
+if lsmod | grep -q "^mxu11x0"; then
+    ok "Moxa mxu11x0 driver loaded"
+elif lsmod | grep -q "^mxuport"; then
+    warn "Mainline 'mxuport' driver is loaded — it cannot reliably switch RS-485 2-wire."
+    warn "Install Moxa's mxu11x0 driver (see README) and blacklist mxuport."
+else
+    warn "No Moxa serial driver detected yet. Install mxu11x0 (see README) before relying on RS-485 mode."
+fi
+
+# --- Ensure setserial present (needed to set RS-485 interface mode) ---
+if ! command -v setserial &>/dev/null; then
+    log "Installing setserial..."
+    apt-get update -q
+    apt-get install -y -q setserial
+fi
+ok "setserial available"
+
 # --- Install udev rule for stable name, if provided alongside this script ---
 RULE_SRC="$(dirname "$0")/99-openaut-moxa.rules"
 if [ -f "$RULE_SRC" ]; then
@@ -45,11 +65,18 @@ else
     warn "99-openaut-moxa.rules not found next to setup.sh — install it manually for a stable /dev/openaut-shunt"
 fi
 
-# --- Stable symlink check ---
+# --- Stable symlink check + set RS-485 2-wire mode ---
 if [ -e /dev/openaut-shunt ]; then
     ok "/dev/openaut-shunt present ($(readlink -f /dev/openaut-shunt))"
+    if setserial /dev/openaut-shunt port 1 2>/dev/null; then
+        ok "RS-485 2-wire mode set (setserial port 1)"
+        log "Current mode: $(setserial -G /dev/openaut-shunt 2>/dev/null)"
+    else
+        warn "Could not set RS-485 mode via setserial — confirm mxu11x0 driver is loaded."
+    fi
 else
-    warn "/dev/openaut-shunt not present yet — verify the udev serial, or temporarily set rs485.port to /dev/ttyUSB0"
+    warn "/dev/openaut-shunt not present yet — verify the udev serial, or temporarily use /dev/ttyUSB0"
+    warn "Then set mode manually: sudo setserial /dev/ttyUSB0 port 1   # RS-485 2-wire"
 fi
 
 # --- openaut user / dialout ---
@@ -91,7 +118,7 @@ echo -e "${GREEN}[openAut] POC2 setup complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Next steps:"
-echo "  1. Ensure the Moxa port is in RS-485 2-wire mode and /dev/openaut-shunt resolves."
+echo "  1. Confirm RS-485 2-wire:  setserial -G /dev/openaut-shunt   # expect 'port 1'"
 echo "  2. scp edge/shunt_control.py openaut@<IP>:/opt/openaut/shunt/"
 echo "  3. scp config/<your>-shunt-config.json openaut@<IP>:/opt/openaut/shunt/config.json"
 echo "  4. scp edge/openaut-shunt.service openaut@<IP>:/tmp/ && \\"
